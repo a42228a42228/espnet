@@ -224,6 +224,7 @@ class HiFiGANPeriodDiscriminator(torch.nn.Module):
         self,
         in_channels: int = 1,
         out_channels: int = 1,
+        num_conditions: int = 0,
         period: int = 3,
         kernel_sizes: List[int] = [5, 3],
         channels: int = 32,
@@ -265,6 +266,12 @@ class HiFiGANPeriodDiscriminator(torch.nn.Module):
 
         self.period = period
         self.convs = torch.nn.ModuleList()
+
+        # add global condition
+        if num_conditions > 0:
+            self.num_conditions = num_conditions
+            in_channels += num_conditions
+
         in_chs = in_channels
         out_chs = channels
         for downsample_scale in downsample_scales:
@@ -304,7 +311,7 @@ class HiFiGANPeriodDiscriminator(torch.nn.Module):
         if use_spectral_norm:
             self.apply_spectral_norm()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, g: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Calculate forward propagation.
 
         Args:
@@ -321,6 +328,14 @@ class HiFiGANPeriodDiscriminator(torch.nn.Module):
             x = F.pad(x, (0, n_pad), "reflect")
             t += n_pad
         x = x.view(b, c, t // self.period, self.period)
+
+        # global condition related
+        if g is not None:
+            # expand global condition (B, 1, spks) -> (B, spks, T/P, P)
+            g = g.view(-1, self.num_conditions, 1).unsqueeze(-1)
+            g = g.expand(-1, -1, x.size(2), x.size(3))
+            # concate globel condition with x
+            x = torch.cat((x, g), 1)
 
         # forward conv
         outs = []
@@ -359,6 +374,7 @@ class HiFiGANMultiPeriodDiscriminator(torch.nn.Module):
 
     def __init__(
         self,
+        num_conditions: int = 0,
         periods: List[int] = [2, 3, 5, 7, 11],
         discriminator_params: Dict[str, Any] = {
             "in_channels": 1,
@@ -387,9 +403,9 @@ class HiFiGANMultiPeriodDiscriminator(torch.nn.Module):
         for period in periods:
             params = copy.deepcopy(discriminator_params)
             params["period"] = period
-            self.discriminators += [HiFiGANPeriodDiscriminator(**params)]
+            self.discriminators += [HiFiGANPeriodDiscriminator(num_conditions=num_conditions, **params)]
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, g: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Calculate forward propagation.
 
         Args:
@@ -402,7 +418,7 @@ class HiFiGANMultiPeriodDiscriminator(torch.nn.Module):
         """
         outs = []
         for f in self.discriminators:
-            outs += [f(x)]
+            outs += [f(x, g=g)]
 
         return outs
 
@@ -414,6 +430,7 @@ class HiFiGANScaleDiscriminator(torch.nn.Module):
         self,
         in_channels: int = 1,
         out_channels: int = 1,
+        num_conditions: int = 0,
         kernel_sizes: List[int] = [15, 41, 5, 3],
         channels: int = 128,
         max_downsample_channels: int = 1024,
@@ -454,6 +471,11 @@ class HiFiGANScaleDiscriminator(torch.nn.Module):
         assert len(kernel_sizes) == 4
         for ks in kernel_sizes:
             assert ks % 2 == 1
+
+        # add number of conditions to in_channels
+        if num_conditions > 0:
+            self.num_conditions = num_conditions
+            in_channels += num_conditions
 
         # add first layer
         self.layers += [
@@ -540,7 +562,7 @@ class HiFiGANScaleDiscriminator(torch.nn.Module):
         # backward compatibility
         self._register_load_state_dict_pre_hook(self._load_state_dict_pre_hook)
 
-    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
+    def forward(self, x: torch.Tensor, g: Optional[torch.Tensor] = None) -> List[torch.Tensor]:
         """Calculate forward propagation.
 
         Args:
@@ -550,6 +572,15 @@ class HiFiGANScaleDiscriminator(torch.nn.Module):
             List[Tensor]: List of output tensors of each layer.
 
         """
+
+        # global condition related
+        if g is not None:
+            # expand global condition (B, 1, spks) -> (B, spks, T)
+            g = g.view(-1, self.num_conditions, 1)
+            g = g.expand(-1, -1, x.size(2))
+            # concate globel condition with x
+            x = torch.cat((x, g), 1)
+
         outs = []
         for f in self.layers:
             x = f(x)
@@ -682,6 +713,7 @@ class HiFiGANMultiScaleDiscriminator(torch.nn.Module):
     def __init__(
         self,
         scales: int = 3,
+        num_conditions: int = 0,
         downsample_pooling: str = "AvgPool1d",
         # follow the official implementation setting
         downsample_pooling_params: Dict[str, Any] = {
@@ -731,14 +763,14 @@ class HiFiGANMultiScaleDiscriminator(torch.nn.Module):
                 else:
                     params["use_weight_norm"] = True
                     params["use_spectral_norm"] = False
-            self.discriminators += [HiFiGANScaleDiscriminator(**params)]
+            self.discriminators += [HiFiGANScaleDiscriminator(num_conditions=num_conditions, **params)]
         self.pooling = None
         if scales > 1:
             self.pooling = getattr(torch.nn, downsample_pooling)(
                 **downsample_pooling_params
             )
 
-    def forward(self, x: torch.Tensor) -> List[List[torch.Tensor]]:
+    def forward(self, x: torch.Tensor, g: Optional[torch.Tensor] = None) -> List[List[torch.Tensor]]:
         """Calculate forward propagation.
 
         Args:
@@ -751,7 +783,7 @@ class HiFiGANMultiScaleDiscriminator(torch.nn.Module):
         """
         outs = []
         for f in self.discriminators:
-            outs += [f(x)]
+            outs += [f(x, g=g)]
             if self.pooling is not None:
                 x = self.pooling(x)
 
@@ -763,6 +795,7 @@ class HiFiGANMultiScaleMultiPeriodDiscriminator(torch.nn.Module):
 
     def __init__(
         self,
+        num_conditions: int = 0,
         # Multi-scale discriminator related
         scales: int = 3,
         scale_downsample_pooling: str = "AvgPool1d",
@@ -820,6 +853,7 @@ class HiFiGANMultiScaleMultiPeriodDiscriminator(torch.nn.Module):
         """
         super().__init__()
         self.msd = HiFiGANMultiScaleDiscriminator(
+            num_conditions=num_conditions,
             scales=scales,
             downsample_pooling=scale_downsample_pooling,
             downsample_pooling_params=scale_downsample_pooling_params,
@@ -827,11 +861,12 @@ class HiFiGANMultiScaleMultiPeriodDiscriminator(torch.nn.Module):
             follow_official_norm=follow_official_norm,
         )
         self.mpd = HiFiGANMultiPeriodDiscriminator(
+            num_conditions=num_conditions,
             periods=periods,
             discriminator_params=period_discriminator_params,
         )
 
-    def forward(self, x: torch.Tensor) -> List[List[torch.Tensor]]:
+    def forward(self, x: torch.Tensor, g: Optional[torch.Tensor] = None) -> List[List[torch.Tensor]]:
         """Calculate forward propagation.
 
         Args:
@@ -843,6 +878,133 @@ class HiFiGANMultiScaleMultiPeriodDiscriminator(torch.nn.Module):
                 multi period ones are concatenated.
 
         """
-        msd_outs = self.msd(x)
-        mpd_outs = self.mpd(x)
+        msd_outs = self.msd(x, g=g)
+        mpd_outs = self.mpd(x, g=g)
         return msd_outs + mpd_outs
+    
+class ConditionalHiFiGANMultiScaleMultiPeriodDiscriminator(torch.nn.Module):
+    """HiFi-GAN multi-scale + multi-period discriminator with Conditional module."""
+
+    def __init__(
+        self,
+        # multi-speaker related
+        spks: Optional[int] = None,
+        global_channels: int = -1,
+        scales: int = 3,
+        scale_downsample_pooling: str = "AvgPool1d",
+        scale_downsample_pooling_params: Dict[str, Any] = {
+            "kernel_size": 4,
+            "stride": 2,
+            "padding": 2,
+        },
+        scale_discriminator_params: Dict[str, Any] = {
+            "in_channels": 1,
+            "out_channels": 1,
+            "kernel_sizes": [15, 41, 5, 3],
+            "channels": 128,
+            "max_downsample_channels": 1024,
+            "max_groups": 16,
+            "bias": True,
+            "downsample_scales": [2, 2, 4, 4, 1],
+            "nonlinear_activation": "LeakyReLU",
+            "nonlinear_activation_params": {"negative_slope": 0.1},
+        },
+        follow_official_norm: bool = True,
+        # Multi-period discriminator related
+        periods: List[int] = [2, 3, 5, 7, 11],
+        period_discriminator_params: Dict[str, Any] = {
+            "in_channels": 1,
+            "out_channels": 1,
+            "kernel_sizes": [5, 3],
+            "channels": 32,
+            "downsample_scales": [3, 3, 3, 3, 1],
+            "max_downsample_channels": 1024,
+            "bias": True,
+            "nonlinear_activation": "LeakyReLU",
+            "nonlinear_activation_params": {"negative_slope": 0.1},
+            "use_weight_norm": True,
+            "use_spectral_norm": False,
+        },
+    ):
+        """Initilize HiFiGAN multi-scale + multi-period discriminator module.
+
+        Args:
+            scales (int): Number of multi-scales.
+            scale_downsample_pooling (str): Pooling module name for downsampling of the
+                inputs.
+            scale_downsample_pooling_params (dict): Parameters for the above pooling
+                module.
+            scale_discriminator_params (dict): Parameters for hifi-gan scale
+                discriminator module.
+            follow_official_norm (bool): Whether to follow the norm setting of the
+                official implementaion. The first discriminator uses spectral norm and
+                the other discriminators use weight norm.
+            periods (list): List of periods.
+            period_discriminator_params (dict): Parameters for hifi-gan period
+                discriminator module. The period parameter will be overwritten.
+
+        """
+        super().__init__()
+
+        # multi-speaker embeding
+        self.num_conditions = 0
+        self.spks = None
+        if spks is not None and spks > 1:
+            assert global_channels > 0
+            self.spks = spks
+            self.num_conditions += spks
+
+        self.msd_mpd = HiFiGANMultiScaleMultiPeriodDiscriminator(
+            num_conditions=self.num_conditions,
+            scales=scales,
+            scale_downsample_pooling=scale_downsample_pooling,
+            scale_downsample_pooling_params=scale_downsample_pooling_params,
+            scale_discriminator_params=scale_discriminator_params,
+            follow_official_norm=follow_official_norm,
+            periods=periods,
+            period_discriminator_params=period_discriminator_params,
+        )
+
+    def forward(
+            self,
+            speech: torch.Tensor,
+            sids: Optional[torch.Tensor] = None,
+    ) -> List[List[torch.Tensor]]:
+        """Calculate forward propagation.
+
+        Args:
+            x (Tensor): Input noise signal (B, 1, T).
+
+        Returns:
+            List[List[Tensor]]: List of list of each discriminator outputs,
+                which consists of each layer output tensors. Multi scale and
+                multi period ones are concatenated.
+
+        """
+        # calculate global conditioning
+        g = None
+        if self.spks is not None:
+            spks = self.spks
+            # speaker one-hot vector: (B, 1, spks)
+            g = F.one_hot(sids.view(-1), num_classes=spks).view(-1, 1, spks)
+
+        # forward HiFiGAN multi-scale + multi-period discriminator
+        outs = self.msd_mpd(speech, g=g)
+        return outs
+
+# def main():
+#     x = torch.randn(1,1,50)
+#     sids = torch.tensor([[1]])
+#     discriminator = ConditionalHiFiGANMultiScaleMultiPeriodDiscriminator(spks=4, global_channels=20)
+#     # g = discriminator(x, sids=sids)
+#     # sd = HiFiGANScaleDiscriminator(num_conditions=0)
+#     # msd = HiFiGANMultiScaleDiscriminator(num_conditions=4)
+#     # pd = HiFiGANPeriodDiscriminator(num_conditions=4)
+#     # mpd = HiFiGANMultiPeriodDiscriminator(num_conditions=4)
+#     # msd_mpd = HiFiGANMultiScaleMultiPeriodDiscriminator(num_conditions=4)
+#     # x = msd_mpd(x, g)
+#     x = discriminator(x, sids)
+#     print(len(x))
+
+# if __name__ == "__main__":
+#     main()

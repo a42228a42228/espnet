@@ -17,12 +17,14 @@ from espnet2.gan_tts.hifigan import (
     HiFiGANMultiScaleMultiPeriodDiscriminator,
     HiFiGANPeriodDiscriminator,
     HiFiGANScaleDiscriminator,
+    ConditionalHiFiGANMultiScaleMultiPeriodDiscriminator,
 )
 from espnet2.gan_tts.hifigan.loss import (
     DiscriminatorAdversarialLoss,
     FeatureMatchLoss,
     GeneratorAdversarialLoss,
     MelSpectrogramLoss,
+    ConditionDiscriminatorAdversarialLoss,
 )
 from espnet2.gan_tts.utils import get_segments
 from espnet2.gan_tts.vits.generator import VITSGenerator
@@ -38,6 +40,7 @@ AVAILABLE_DISCRIMINATORS = {
     "hifigan_multi_period_discriminator": HiFiGANMultiPeriodDiscriminator,
     "hifigan_multi_scale_discriminator": HiFiGANMultiScaleDiscriminator,
     "hifigan_multi_scale_multi_period_discriminator": HiFiGANMultiScaleMultiPeriodDiscriminator,  # NOQA
+    "conditional_hifigan_multi_scale_multi_period_discriminator": ConditionalHiFiGANMultiScaleMultiPeriodDiscriminator,
 }
 
 if LooseVersion(torch.__version__) >= LooseVersion("1.6.0"):
@@ -117,6 +120,10 @@ class VITS(AbsGANTTS):
         # discriminator related
         discriminator_type: str = "hifigan_multi_scale_multi_period_discriminator",
         discriminator_params: Dict[str, Any] = {
+            # multi-speaker related
+            "spks": None,
+            "global_channels": -1,
+            # hifigan related
             "scales": 1,
             "scale_downsample_pooling": "AvgPool1d",
             "scale_downsample_pooling_params": {
@@ -237,6 +244,9 @@ class VITS(AbsGANTTS):
         self.discriminator_adv_loss = DiscriminatorAdversarialLoss(
             **discriminator_adv_loss_params,
         )
+        self.condition_discriminator_adv_loss = ConditionDiscriminatorAdversarialLoss(
+            **discriminator_adv_loss_params,
+        )
         self.feat_match_loss = FeatureMatchLoss(
             **feat_match_loss_params,
         )
@@ -244,7 +254,7 @@ class VITS(AbsGANTTS):
             **mel_loss_params,
         )
         self.kl_loss = KLDivergenceLoss()
-
+        self.discriminator_type = discriminator_type
         # coefficients
         self.lambda_adv = lambda_adv
         self.lambda_mel = lambda_mel
@@ -403,10 +413,20 @@ class VITS(AbsGANTTS):
         )
 
         # calculate discriminator outputs
-        p_hat = self.discriminator(speech_hat_)
-        with torch.no_grad():
-            # do not store discriminator gradient in generator turn
-            p = self.discriminator(speech_)
+        # p_hat = self.discriminator(speech_hat_)
+        # with torch.no_grad():
+        #     # do not store discriminator gradient in generator turn
+        #     p = self.discriminator(speech_)
+        if self.discriminator_type == "conditional_hifigan_multi_scale_multi_period_discriminator":
+            p_hat = self.discriminator(speech_hat_, sids=sids)
+            with torch.no_grad():
+                # do not store discriminator gradient in generator turn
+                p = self.discriminator(speech_, sids=sids)
+        else:
+            p_hat = self.discriminator(speech_hat_)
+            with torch.no_grad():
+                # do not store discriminator gradient in generator turn
+                p = self.discriminator(speech_)
 
         # calculate losses
         with autocast(enabled=False):
@@ -512,19 +532,40 @@ class VITS(AbsGANTTS):
         )
 
         # calculate discriminator outputs
-        p_hat = self.discriminator(speech_hat_.detach())
-        p = self.discriminator(speech_)
+        # p_hat = self.discriminator(speech_hat_.detach())
+        # p = self.discriminator(speech_)
+        if self.discriminator_type == "conditional_hifigan_multi_scale_multi_period_discriminator":
+            p_hat = self.discriminator(speech_hat_.detach(), sids=sids)
+            p = self.discriminator(speech_, sids=sids)
+            fake_label = self._create_fake_label(spks=self.spks, sids=sids)
+            p_fake_label = self.discriminator(speech_, sids=fake_label)
+        else:
+            p_hat = self.discriminator(speech_hat_.detach())
+            p = self.discriminator(speech_)
 
         # calculate losses
         with autocast(enabled=False):
-            real_loss, fake_loss = self.discriminator_adv_loss(p_hat, p)
-            loss = real_loss + fake_loss
+            if self.discriminator_type == "conditional_hifigan_multi_scale_multi_period_discriminator":
+                real_loss, fake_loss, fake_label_loss= self.condition_discriminator_adv_loss(p_hat, p, p_fake_label)
+                fake_label_loss = fake_label_loss * 2
+                loss = real_loss + fake_loss + fake_label_loss
+            else:
+                real_loss, fake_loss = self.discriminator_adv_loss(p_hat, p)
+                loss = real_loss + fake_loss
 
-        stats = dict(
-            discriminator_loss=loss.item(),
-            discriminator_real_loss=real_loss.item(),
-            discriminator_fake_loss=fake_loss.item(),
-        )
+        if self.discriminator_type == "conditional_hifigan_multi_scale_multi_period_discriminator":
+            stats = dict(
+                discriminator_loss=loss.item(),
+                discriminator_real_loss=real_loss.item(),
+                discriminator_fake_loss=fake_loss.item(),
+                discriminator_fake_label_loss = fake_label_loss.item(),
+            )
+        else:
+            stats = dict(
+                discriminator_loss=loss.item(),
+                discriminator_real_loss=real_loss.item(),
+                discriminator_fake_loss=fake_loss.item(),
+            )
         loss, stats, weight = force_gatherable((loss, stats, batch_size), loss.device)
 
         # reset cache
@@ -622,3 +663,17 @@ class VITS(AbsGANTTS):
                 max_len=max_len,
             )
         return dict(wav=wav.view(-1), att_w=att_w[0], duration=dur[0])
+
+    def _create_fake_label(self, spks, sids):
+        fake_label = torch.empty_like(sids)
+
+        # though out all of the element of fake_label
+        for i in range(fake_label.size(0)):
+            for j in range(fake_label.size(1)):
+                # generate a random number less than 4 and not the same as sids
+                value = torch.randint(spks, (1,))
+                while value.item() == sids[i, j]:
+                    value = torch.randint(spks, (1,))
+                # put the generated number into fake_label
+                fake_label[i, j] = value
+        return fake_label

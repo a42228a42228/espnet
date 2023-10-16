@@ -152,6 +152,89 @@ class DiscriminatorAdversarialLoss(torch.nn.Module):
     def _hinge_fake_loss(self, x: torch.Tensor) -> torch.Tensor:
         return -torch.mean(torch.min(-x - 1, x.new_zeros(x.size())))
 
+class ConditionDiscriminatorAdversarialLoss(torch.nn.Module):
+    """Discriminator adversarial loss module."""
+
+    def __init__(
+        self,
+        average_by_discriminators: bool = True,
+        loss_type: str = "mse",
+    ):
+        """Initialize DiscriminatorAversarialLoss module.
+
+        Args:
+            average_by_discriminators (bool): Whether to average the loss by
+                the number of discriminators.
+            loss_type (str): Loss type, "mse" or "hinge".
+
+        """
+        super().__init__()
+        self.average_by_discriminators = average_by_discriminators
+        assert loss_type in ["mse", "hinge"], f"{loss_type} is not supported."
+        if loss_type == "mse":
+            self.fake_criterion = self._mse_fake_loss
+            self.real_criterion = self._mse_real_loss
+        else:
+            self.fake_criterion = self._hinge_fake_loss
+            self.real_criterion = self._hinge_real_loss
+
+    def forward(
+        self,
+        outputs_hat: Union[List[List[torch.Tensor]], List[torch.Tensor], torch.Tensor],
+        outputs: Union[List[List[torch.Tensor]], List[torch.Tensor], torch.Tensor],
+        outputs_false_label: Union[List[List[torch.Tensor]], List[torch.Tensor], torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Calcualate discriminator adversarial loss.
+
+        Args:
+            outputs_hat (Union[List[List[Tensor]], List[Tensor], Tensor]): Discriminator
+                outputs, list of discriminator outputs, or list of list of discriminator
+                outputs calculated from generator.
+            outputs (Union[List[List[Tensor]], List[Tensor], Tensor]): Discriminator
+                outputs, list of discriminator outputs, or list of list of discriminator
+                outputs calculated from groundtruth.
+
+        Returns:
+            Tensor: Discriminator real loss value.
+            Tensor: Discriminator fake loss value.
+
+        """
+        if isinstance(outputs, (tuple, list)):
+            real_loss = 0.0
+            fake_loss = 0.0
+            fake_label_loss = 0.0
+            for i, (outputs_hat_, outputs_, outputs_false_label_) in enumerate(zip(outputs_hat, outputs, outputs_false_label)):
+                if isinstance(outputs_hat_, (tuple, list)):
+                    # NOTE(kan-bayashi): case including feature maps
+                    outputs_hat_ = outputs_hat_[-1]
+                    outputs_ = outputs_[-1]
+                if isinstance(outputs_false_label_, (tuple, list)):
+                    outputs_false_label_ = outputs_false_label_[-1]
+                real_loss += self.real_criterion(outputs_)
+                fake_loss += self.fake_criterion(outputs_hat_)
+                fake_label_loss += self.fake_criterion(outputs_false_label_)
+            if self.average_by_discriminators:
+                fake_loss /= i + 1
+                real_loss /= i + 1
+                fake_label_loss /= i + 1
+        else:
+            real_loss = self.real_criterion(outputs)
+            fake_loss = self.fake_criterion(outputs_hat)
+            fake_label_loss = self.fake_criterion(outputs_false_label_)
+
+        return real_loss, fake_loss, fake_label_loss
+
+    def _mse_real_loss(self, x: torch.Tensor) -> torch.Tensor:
+        return F.mse_loss(x, x.new_ones(x.size()))
+
+    def _mse_fake_loss(self, x: torch.Tensor) -> torch.Tensor:
+        return F.mse_loss(x, x.new_zeros(x.size()))
+
+    def _hinge_real_loss(self, x: torch.Tensor) -> torch.Tensor:
+        return -torch.mean(torch.min(x - 1, x.new_zeros(x.size())))
+
+    def _hinge_fake_loss(self, x: torch.Tensor) -> torch.Tensor:
+        return -torch.mean(torch.min(-x - 1, x.new_zeros(x.size())))
 
 class FeatureMatchLoss(torch.nn.Module):
     """Feature matching loss module."""
