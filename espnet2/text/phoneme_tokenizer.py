@@ -20,6 +20,7 @@ g2p_choices = [
     "pyopenjtalk_accent",
     "pyopenjtalk_accent_with_pause",
     "pyopenjtalk_prosody",
+    "pyopenjtalk_prosody_role",
     "pypinyin_g2p",
     "pypinyin_g2p_phone",
     "pypinyin_g2p_phone_without_prosody",
@@ -173,7 +174,103 @@ def pyopenjtalk_g2p_prosody(text: str, drop_unvoiced_vowels: bool = True) -> Lis
         # pitch rising
         elif a2 == 1 and a2_next == 2:
             phones.append("[")
+    return phones
 
+
+# prosody + role
+def pyopenjtalk_g2p_prosody_role(text: str, drop_unvoiced_vowels: bool = True) -> List[str]:
+    """Extract phoneme + prosoody symbol sequence from input full-context labels.
+
+    The algorithm is based on `Prosodic features control by symbols as input of
+    sequence-to-sequence acoustic modeling for neural TTS`_ with some r9y9's tweaks.
+
+    Args:
+        text (str): Input text.
+        drop_unvoiced_vowels (bool): whether to drop unvoiced vowels.
+
+    Returns:
+        List[str]: List of phoneme + prosody symbols.
+
+    Examples:
+        >>> from espnet2.text.phoneme_tokenizer import pyopenjtalk_g2p_prosody
+        >>> pyopenjtalk_g2p_prosody("こんにちは。")
+        ['^', 'k', 'o', '[', 'N', 'n', 'i', 'ch', 'i', 'w', 'a', '$']
+
+    .. _`Prosodic features control by symbols as input of sequence-to-sequence acoustic
+        modeling for neural TTS`: https://doi.org/10.1587/transinf.2020EDP7104
+
+    """
+    phones = []
+
+    # 役割
+    role = ['<0>', '<1>', '<2>']
+    # 文字列最初の文字（役割）から役割追加
+    if text[0:3] == role[0]:
+        phones.append(role[0])
+        # 役割を除いた文章からコンテキストに変換
+        labels = _extract_fullcontext_label(text[3:])
+    elif text[0:3] == role[1]:
+        phones.append(role[1])
+        labels = _extract_fullcontext_label(text[3:])
+    elif text[0:3] == role[2]:
+        phones.append(role[2])
+        labels = _extract_fullcontext_label(text[3:])
+    else:       # 役割なしの場合
+        # 文章そのままコンテキストに変換
+        labels = labels = _extract_fullcontext_label(text)
+
+    N = len(labels)
+    for n in range(N):
+        lab_curr = labels[n]
+
+        # current phoneme
+        p3 = re.search(r"\-(.*?)\+", lab_curr).group(1)
+
+        # deal unvoiced vowels as normal vowels
+        if drop_unvoiced_vowels and p3 in "AEIOU":
+            p3 = p3.lower()
+
+        # deal with sil at the beginning and the end of text
+        if p3 == "sil":
+            assert n == 0 or n == N - 1
+            if n == 0:
+                phones.append("^")
+            elif n == N - 1:
+                # check question form or not
+                e3 = _numeric_feature_by_regex(r"!(\d+)_", lab_curr)
+                if e3 == 0:
+                    phones.append("$")
+                elif e3 == 1:
+                    phones.append("?")
+            continue
+        elif p3 == "pau":
+            phones.append("_")
+            continue
+        else:
+            phones.append(p3)
+
+        # accent type and position info (forward or backward)
+        a1 = _numeric_feature_by_regex(r"/A:([0-9\-]+)\+", lab_curr)
+        a2 = _numeric_feature_by_regex(r"\+(\d+)\+", lab_curr)
+        a3 = _numeric_feature_by_regex(r"\+(\d+)/", lab_curr)
+
+        # number of mora in accent phrase
+        f1 = _numeric_feature_by_regex(r"/F:(\d+)_", lab_curr)
+
+        a2_next = _numeric_feature_by_regex(r"\+(\d+)\+", labels[n + 1])
+        # accent phrase border
+        if a3 == 1 and a2_next == 1 and p3 in "aeiouAEIOUNcl":
+            phones.append("#")
+        # pitch falling
+        elif a1 == 0 and a2_next == a2 + 1 and a2 != f1:
+            phones.append("]")
+        # pitch rising
+        elif a2 == 1 and a2_next == 2:
+            phones.append("[")
+    # with open("test.txt", "a") as f:
+    #     for p in phones:
+    #         f.write(p + ",")
+    #     f.write("\n")
     return phones
 
 
@@ -456,6 +553,8 @@ class PhonemeTokenizer(AbsTokenizer):
             self.g2p = pyopenjtalk_g2p_accent_with_pause
         elif g2p_type == "pyopenjtalk_prosody":
             self.g2p = pyopenjtalk_g2p_prosody
+        elif g2p_type == "pyopenjtalk_prosody_role":
+            self.g2p = pyopenjtalk_g2p_prosody_role
         elif g2p_type == "pypinyin_g2p":
             self.g2p = pypinyin_g2p
         elif g2p_type == "pypinyin_g2p_phone":
