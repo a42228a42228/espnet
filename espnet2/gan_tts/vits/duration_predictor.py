@@ -57,12 +57,12 @@ class StochasticDurationPredictor(torch.nn.Module):
 
         self.pre = torch.nn.Conv1d(channels, channels, 1)
         self.dds = DilatedDepthSeparableConv(
-            channels,
+            2*channels,
             kernel_size,
             layers=dds_conv_layers,
             dropout_rate=dropout_rate,
         )
-        self.proj = torch.nn.Conv1d(channels, channels, 1)
+        self.proj = torch.nn.Conv1d(2*channels, channels, 1)
 
         self.log_flow = LogFlow()
         self.flows = torch.nn.ModuleList()
@@ -129,7 +129,12 @@ class StochasticDurationPredictor(torch.nn.Module):
         x = x.detach()  # stop gradient
         x = self.pre(x)
         if g is not None:
-            x = x + self.global_conv(g.detach())  # stop gradient
+            g = self.global_conv(g.detach())
+            g = g.expand(x.size())
+            # add info of g with plus
+            # x = x + self.global_conv(g.detach())  # stop gradient
+            # add info of g with concat
+            x = torch.cat([x, g], dim=1)
         x = self.dds(x, x_mask)
         x = self.proj(x) * x_mask
 
@@ -148,6 +153,7 @@ class StochasticDurationPredictor(torch.nn.Module):
             )
             z_q = e_q
             logdet_tot_q = 0.0
+            # flow-based posterior encoder in stochastic duration predictor
             for flow in self.post_flows:
                 z_q, logdet_q = flow(z_q, x_mask, g=(x + h_w))
                 logdet_tot_q += logdet_q
@@ -166,6 +172,7 @@ class StochasticDurationPredictor(torch.nn.Module):
             z0, logdet = self.log_flow(z0, x_mask)
             logdet_tot += logdet
             z = torch.cat([z0, z1], 1)
+            # flow g_theta in stochastic duration predictor
             for flow in self.flows:
                 z, logdet = flow(z, x_mask, g=x, inverse=inverse)
                 logdet_tot = logdet_tot + logdet
@@ -190,3 +197,14 @@ class StochasticDurationPredictor(torch.nn.Module):
             z0, z1 = z.split(1, 1)
             logw = z0
             return logw
+
+# def main():
+#     x = torch.rand(1, 192, 47)
+#     x_mask = torch.rand(1, 1, 47)
+#     w = torch.rand(1, 1, 47)
+#     g = torch.rand(1, 20, 1)
+#     sdp = StochasticDurationPredictor(global_channels=20)
+#     sdp(x, x_mask, w, g)
+
+# if __name__ == "__main__":
+#     main()
