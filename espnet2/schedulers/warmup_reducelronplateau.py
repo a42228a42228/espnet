@@ -2,7 +2,8 @@
 from typing import Union
 
 import torch
-from torch import inf
+# from torch import inf
+import numpy
 from typeguard import check_argument_types
 
 from espnet2.schedulers.abs_scheduler import (
@@ -181,9 +182,9 @@ class WarmupReduceLROnPlateau(AbsBatchStepScheduler, AbsValEpochStepScheduler):
             raise ValueError("threshold mode " + threshold_mode + " is unknown!")
 
         if mode == "min":
-            self.mode_worse = inf
+            self.mode_worse = np.inf
         else:  # mode == 'max':
-            self.mode_worse = -inf
+            self.mode_worse = -np.inf
 
         self.mode = mode
         self.threshold = threshold
