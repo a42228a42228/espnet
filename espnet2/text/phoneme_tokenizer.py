@@ -20,6 +20,7 @@ g2p_choices = [
     "pyopenjtalk_accent",
     "pyopenjtalk_accent_with_pause",
     "pyopenjtalk_prosody",
+    "pyopenjtalk_prosody_sp_token",
     "pypinyin_g2p",
     "pypinyin_g2p_phone",
     "pypinyin_g2p_phone_without_prosody",
@@ -177,11 +178,196 @@ def pyopenjtalk_g2p_prosody(text: str, drop_unvoiced_vowels: bool = True) -> Lis
     return phones
 
 
+def pyopenjtalk_g2p_prosody_sp_token(text: str, drop_unvoiced_vowels: bool = True) -> List[str]:
+    """
+    Process text with special tags (e.g., <tag>...</tag>) by splitting, extracting prosody symbols,
+    and combining results with markers for boundary positions, matching full input sequence.
+
+    Args:
+        text (str): Input text with special markers (e.g., <tag>, </tag>).
+        drop_unvoiced_vowels (bool): Whether to drop unvoiced vowels in the phoneme sequence.
+
+    Returns:
+        Tuple[List[str], List[str]]: Combined phoneme + prosody symbol sequence with boundary markers,
+        and a list of special tokens.
+
+    Example:
+        >>> pyopenjtalk_g2p_prosody_sp_token("時刻はまもなく<tag>2時</tag>5分です")
+        (['^', 'j', 'i', ']', 'k', 'o', 'k', 'u', 'w', 'a', '#', 'm', 'a', '[', 'm', 'o', ']', 'n', 'a', 'k', 'u', '#', '<tag>', 'n', 'i', ']', 'j', 'i', '</tag>', '#', 'g', 'o', ']', 'f', 'u', 'N', 'd', 'e', 's', 'u', '$'], ['<tag>', '</tag>'])
+    """
+    special_symbols = re.findall(r'<.*?>', text)
+    
+    clean_text = re.sub(r'<[^>]+>', '', text)
+    clean_phones = pyopenjtalk_g2p_prosody(clean_text, drop_unvoiced_vowels)
+    
+    emp_phones = pyopenjtalk_g2p_prosody(text, drop_unvoiced_vowels)
+    emp_phones = _replace_continuous_pattern(emp_phones, special_symbols)
+    emp_phones = _dp_with_shortest_alignment(emp_phones, clean_phones, special_symbols)
+    return emp_phones
+
+
+def extract_special_symbols(input_string: str) -> List[str]:
+    """
+    Extract the contents within special symbols '<' and '>' in a given string.
+
+    Args:
+        input_string (str): The input string containing special symbols.
+
+    Returns:
+        List[str]: A list of extracted contents within '<' and '>'.
+    """
+    return re.findall(r'<(.*?)>', input_string)
+
+
+def _replace_continuous_pattern(input_list: List[str], special_symbols: List[str]) -> List[str]:
+    """
+    Replace continuous patterns ['_', 'i', ']', 'i', '_'] or ['_', 'i', ']', 'i', '_', 'i', ']', 'i', '_']
+    with symbols from the provided `special_symbols` list in sequence.
+
+    Args:
+        input_list (List[str]): The input list of phonemes and symbols.
+        special_symbols (List[str]): A list of special symbols to insert in sequence.
+
+    Returns:
+        List[str]: The modified list with replacements applied.
+    """
+    short_pattern = ['_', 'i', ']', 'i', '_']
+    long_pattern = ['_', 'i', ']', 'i', '_', 'i', ']', 'i', '_']
+    output_list = []
+    i = 0
+    symbol_index = 0  # Index to track the current symbol in special_symbols
+
+    while i < len(input_list):
+        if input_list[i:i+len(long_pattern)] == long_pattern:
+            # Insert two symbols for the long pattern
+            output_list.append(special_symbols[symbol_index % len(special_symbols)])
+            symbol_index += 1
+            output_list.append(special_symbols[symbol_index % len(special_symbols)])
+            symbol_index += 1
+            i += len(long_pattern)
+        elif input_list[i:i+len(short_pattern)] == short_pattern:
+            # Insert one symbol for the short pattern
+            output_list.append(special_symbols[symbol_index % len(special_symbols)])
+            symbol_index += 1
+            i += len(short_pattern)
+        else:
+            output_list.append(input_list[i])
+            i += 1
+
+    return output_list
+
+
+def _preprocess_continuous_symbols(a, special_symbols):
+    """
+    將連續的特殊符號替換為唯一的單一標記，並記錄原始連續符號的位置與內容。
+    
+    :param a: 序列 a。
+    :param special_symbols: 特殊符號集合。
+    :return: 處理後的序列和連續特殊符號的替換記錄。
+    """
+    processed_a = []
+    replacements = {}
+    i = 0
+    marker_id = 0  # 用於生成唯一標記
+
+    while i < len(a):
+        if a[i] in special_symbols:
+            start = i
+            while i < len(a) and a[i] in special_symbols:
+                i += 1
+            # 替換連續特殊符號為唯一標記
+            replacement_marker = f"<SYM_{marker_id}>"
+            marker_id += 1
+            processed_a.append(replacement_marker)
+            replacements[replacement_marker] = a[start:i]  # 記錄替換
+        else:
+            processed_a.append(a[i])
+            i += 1
+    return processed_a, replacements
+
+
+def _replace_back(result, replacements):
+    """
+    將替換符號還原為原始連續符號。
+    
+    :param result: 包含替換符號的結果序列。
+    :param replacements: 替換記錄。
+    :return: 還原後的序列。
+    """
+    restored_result = []
+    for item in result:
+        if item in replacements:
+            restored_result.extend(replacements[item])  # 替換回原始連續符號
+        else:
+            restored_result.append(item)
+    return restored_result
+
+
+def _dp_with_shortest_alignment(a, b, special_symbols):
+    """
+    基於 DP 的多種特殊符號插入算法，處理連續特殊符號，並插入到最短匹配的位置。
+
+    :param a: 序列 a。
+    :param b: 序列 b。
+    :param special_symbols: 特殊符號集合。
+    :return: 包含特殊符號的結果序列。
+    """
+    # 預處理連續特殊符號
+    processed_a, replacements = _preprocess_continuous_symbols(a, special_symbols)
+
+    m, n = len(processed_a), len(b)
+    dp = [[float('inf')] * (n + 1) for _ in range(m + 1)]
+
+    # 初始化 DP 表
+    dp[0][0] = 0
+    for i in range(1, m + 1):
+        dp[i][0] = dp[i - 1][0] + 1  # 插入所有特殊符號
+    for j in range(1, n + 1):
+        dp[0][j] = j  # 保留所有 b 的元素
+
+    # 填充 DP 表
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if processed_a[i - 1] == b[j - 1]:  # 元素匹配
+                dp[i][j] = dp[i - 1][j - 1]
+            elif processed_a[i - 1] in replacements:  # 插入特殊符號
+                dp[i][j] = min(dp[i][j], dp[i - 1][j] + 1)
+            else:  # 跳過 processed_a[i-1] 或保留 b[j-1]
+                dp[i][j] = min(dp[i - 1][j], dp[i][j - 1] + 1)
+
+    # 回溯構造結果
+    i, j = m, n
+    result = []
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and processed_a[i - 1] == b[j - 1]:  # 匹配
+            result.append(b[j - 1])
+            i -= 1
+            j -= 1
+        elif i > 0 and processed_a[i - 1] in replacements:  # 插入特殊符號
+            result.append(processed_a[i - 1])
+            i -= 1
+        elif j > 0 and dp[i][j] == dp[i][j - 1] + 1:  # 保留 b[j-1]
+            result.append(b[j - 1])
+            j -= 1
+        else:  # 跳過 processed_a[i-1]
+            i -= 1
+
+    # 還原連續符號
+    return _replace_back(result[::-1], replacements)
+
+
 def _numeric_feature_by_regex(regex, s):
     match = re.search(regex, s)
     if match is None:
         return -50
     return int(match.group(1))
+
+
+# if __name__ == "__main__":
+#     # 使用例
+#     text = "17日の<e>マーリンズ戦で</e><e>今シーズン</e>48号となるホームランを打ち"
+#     emp_phn = pyopenjtalk_g2p_prosody_sp_token(text)
+#     print(emp_phn)
 
 
 def pypinyin_g2p(text) -> List[str]:
@@ -456,6 +642,8 @@ class PhonemeTokenizer(AbsTokenizer):
             self.g2p = pyopenjtalk_g2p_accent_with_pause
         elif g2p_type == "pyopenjtalk_prosody":
             self.g2p = pyopenjtalk_g2p_prosody
+        elif g2p_type == "pyopenjtalk_prosody_sp_token":
+            self.g2p = pyopenjtalk_g2p_prosody_sp_token
         elif g2p_type == "pypinyin_g2p":
             self.g2p = pypinyin_g2p
         elif g2p_type == "pypinyin_g2p_phone":
