@@ -184,6 +184,7 @@ class VITS(AbsGANTTS):
         lambda_feat_match: float = 2.0,
         lambda_dur: float = 1.0,
         lambda_kl: float = 1.0,
+        lambda_cls: float = 0.5,
         cache_generator_outputs: bool = True,
     ):
         """Initialize VITS module.
@@ -251,6 +252,7 @@ class VITS(AbsGANTTS):
         self.lambda_kl = lambda_kl
         self.lambda_feat_match = lambda_feat_match
         self.lambda_dur = lambda_dur
+        self.lambda_cls = lambda_cls
 
         # cache
         self.cache_generator_outputs = cache_generator_outputs
@@ -343,6 +345,7 @@ class VITS(AbsGANTTS):
         feats_lengths: torch.Tensor,
         speech: torch.Tensor,
         speech_lengths: torch.Tensor,
+        emphasis_labels: Optional[torch.Tensor] = None,
         sids: Optional[torch.Tensor] = None,
         spembs: Optional[torch.Tensor] = None,
         lids: Optional[torch.Tensor] = None,
@@ -395,7 +398,7 @@ class VITS(AbsGANTTS):
 
         # parse outputs
         speech_hat_, dur_nll, _, start_idxs, _, z_mask, outs_ = outs
-        _, z_p, m_p, logs_p, _, logs_q = outs_
+        _, z_p, m_p, logs_p, _, logs_q, emphasis_logits = outs_
         speech_ = get_segments(
             x=speech,
             start_idxs=start_idxs * self.generator.upsample_factor,
@@ -422,6 +425,13 @@ class VITS(AbsGANTTS):
             adv_loss = adv_loss * self.lambda_adv
             feat_match_loss = feat_match_loss * self.lambda_feat_match
             loss = mel_loss + kl_loss + dur_loss + adv_loss + feat_match_loss
+            
+            if emphasis_labels is not None:
+                # 計算分類損失 (cls_loss)
+                emphasis_labels = emphasis_labels.to(emphasis_logits.device)
+                cls_loss = torch.nn.BCEWithLogitsLoss()(emphasis_logits.squeeze(1), emphasis_labels)
+                cls_loss = cls_loss * self.lambda_cls  # 使用權重 lambda_cls 控制分類損失影響
+                loss += cls_loss
 
         stats = dict(
             generator_loss=loss.item(),
