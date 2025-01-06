@@ -332,7 +332,7 @@ class VITSGenerator(torch.nn.Module):
                 g = g + g_
 
         # forward posterior encoder
-        z, m_q, logs_q, y_mask = self.posterior_encoder(feats, feats_lengths, g=g)
+        z, m_q, logs_q, y_mask, emphasis_logits = self.posterior_encoder(feats, feats_lengths, g=g)
 
         # forward flow
         z_p = self.flow(z, y_mask, g=g)  # (B, H, T_feats)
@@ -405,7 +405,7 @@ class VITSGenerator(torch.nn.Module):
             z_start_idxs,
             x_mask,
             y_mask,
-            (z, z_p, m_p, logs_p, m_q, logs_q),
+            (z, z_p, m_p, logs_p, m_q, logs_q, emphasis_logits),
         )
 
     def inference(
