@@ -83,7 +83,7 @@ tts_conf:
             nonlinear_activation: "LeakyReLU"
             nonlinear_activation_params:
                 negative_slope: 0.1
-            use_weight_norm: True
+            use_weight_norm: False
             use_spectral_norm: False
         follow_official_norm: False
         periods: [2, 3, 5, 7, 11]
@@ -126,6 +126,7 @@ tts_conf:
     lambda_feat_match: 2.0 # loss scaling coefficient for feat match loss
     lambda_dur: 1.0        # loss scaling coefficient for duration loss
     lambda_kl: 1.0         # loss scaling coefficient for KL divergence loss
+    lambda_cls: 0.5        # loss scaling coefficient for emphasis classify loss
     # others
     sampling_rate: 44100          # needed in the inference for saving wav
     cache_generator_outputs: true # whether to cache generator outputs in the training
@@ -163,7 +164,7 @@ generator_first: false # whether to start updating generator first
 num_iters_per_epoch: 1000 # number of iterations per epoch
 max_epoch: 20           # number of epochs
 accum_grad: 1             # gradient accumulation
-batch_bins: 1000000      # batch bins (feats_type=raw)
+batch_bins: 3000000      # batch bins (feats_type=raw)
 batch_type: numel         # how to make batch
 grad_clip: -1             # gradient clipping norm
 grad_noise: false         # whether to use gradient noise injection
