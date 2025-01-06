@@ -81,6 +81,7 @@ class PosteriorEncoder(torch.nn.Module):
             scale_skip_connect=True,
         )
         self.proj = Conv1d(hidden_channels, out_channels * 2, 1)
+        self.classifier = torch.nn.Conv1d(out_channels, 1, 1)  # Output shape (B, 1, T_feats)
 
     def forward(
         self, x: torch.Tensor, x_lengths: torch.Tensor, g: Optional[torch.Tensor] = None
@@ -112,5 +113,6 @@ class PosteriorEncoder(torch.nn.Module):
         stats = self.proj(x) * x_mask
         m, logs = stats.split(stats.size(1) // 2, dim=1)
         z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
-
-        return z, m, logs, x_mask
+        emphasis_logits = self.classifier(z)  # Shape (B, 1, T_feats)
+        
+        return z, m, logs, x_mask, emphasis_logits
