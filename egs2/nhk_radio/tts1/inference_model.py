@@ -4,9 +4,15 @@ import soundfile as sf
 import torch
 
 # inference from trained model
-def inference(train_config, model_file, text, save_pth):
+def tts_inference(train_config, model_file, text, save_pth, use_sids=False, sids=None):
     tts = Text2Speech.from_pretrained(train_config=train_config,model_file=model_file)
-    wav = tts(text)["wav"]
+    
+    if use_sids:
+        sids = torch.tensor(sids)
+        wav = tts(text, sids=sids)["wav"]
+    else:
+        wav = tts(text)["wav"]
+        
     sf.write(save_pth + ".wav", wav.numpy(), tts.fs, "PCM_16")
     return wav
 
@@ -16,14 +22,16 @@ def concat_wav(wav1, wav2):
 
 def main():
     # config
-    model_pth = "/home/hsieh/espnet/egs2/nhk_radio/tts1/exp/tts_train_vits_44k_raw_phn_jaconv_pyopenjtalk_prosody/train.total_count.ave_10best.pth"
-    train_config_pth = "/home/hsieh/espnet/egs2/nhk_radio/tts1/exp/tts_train_vits_44k_raw_phn_jaconv_pyopenjtalk_prosody/config.yaml"
-    save_pth = "/home/hsieh/espnet/egs2/nhk_radio/tts1/test"
-    text = "首都テヘランでは22日大規模な葬儀が行われています"
-    text_test = "国立公園局は男性が単独で登山中16日に急な斜面でかつらくしたとみられるとしています"
-
+    dir_path = "/mnt/aoni04/hsieh/newsTTS_project/role_newsTTS/exp/tts_global_condition_cgan_vits_raw_phn_jaconv_pyopenjtalk_prosody/"
+    model_type = "train.total_count.ave_10best.pth"
+    filename = "waseda_pcl_ucd_news_039B00"
+    # text_test = "一緒に<e>ヨガの</e><e>ポーズを</e>披露したんだって"
+    # text_emp = "一緒にヨガの<e>ポーズを</e>披露したんだって"
+    # text_emp1 = "一緒に<e>ヨガの</e>ポーズを披露したんだって"
+    # text_emp2 = "<e>一緒に</e>ヨガのポーズを披露したんだって"
+    text = "キンドルアンリミテッドっていうサービスなんだけど"
+    
     # inference
-    inference(train_config_pth, model_pth, text_test, save_pth)
-
+    tts_inference(dir_path+"config.yaml", dir_path+model_type, text, dir_path+filename, use_sids=True, sids=1)
 if __name__ == "__main__":
     main()

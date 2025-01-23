@@ -83,7 +83,7 @@ tts_conf:
             nonlinear_activation: "LeakyReLU"
             nonlinear_activation_params:
                 negative_slope: 0.1
-            use_weight_norm: True
+            use_weight_norm: False
             use_spectral_norm: False
         follow_official_norm: False
         periods: [2, 3, 5, 7, 11]
